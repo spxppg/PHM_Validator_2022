@@ -1,0 +1,273 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This code uploads the ~250 attribute files to DB tables which I hope is more efficient than doing it manually
+by running the "import to server.bat" file.
+
+This code 
+1. Empties the att.XXXX tables in the data base.  DANGER
+1. Copies files from the individual group folders
+2. loops over each of the attributes group folder and uploads the csv file to the DB using the appropriate sql package.
+
+The code will stop if the column headings of file bp_date_reading.csv are incorrect.
+
+To do:
+1. Get this code to generate a pdf!
+1. Need R code to write errors to one file and not 250!!!
+2. Check that the number of rows on disk is the same as the number of rows in DB table
+
+IMPROVEMENT:
+1. Use the import_attributes.bat to read in the names of the files that need to be uploaded.
+Currently I create the string with each filename in to execute the upload package.  But if I
+use the bat file then the bat file will also be checked to be correct.  Butttt the way it is
+done currently is better because it ensures that for each attribute that it exists and that
+there is an associated dtsx file.  Thinking.
+
+Use at the command prompt:
+where dtexec.exe
+to find the location of DTEXEC.exe which is the executable we need to upload files to DB using the SQL packages.
+
+
+```{r init}
+library(tidyverse)
+library(assertthat)
+library(odbc)
+library(DBI)
+library(logger)
+```
+
+```{r definitions} 
+thisMonth = "202202"
+folder_names = c("All_Groups","Group_One", "Group_Two", "Group_Three", "Group_Four", "Group_Five", "Group_Six", "Group_Seven")
+attributes_path = paste0("Z:\\Population Health Management\\Attributes Data\\processing_folder\\Raw_Data\\", thisMonth)
+pathToPackage = "Z:/Population Health Management/Attributes Data/processing_folder/sql_packages/"
+pathToExec="C:\\Program Files (x86)\\Microsoft SQL Server\\120\\DTS\\Binn\\DTEXEC.exe"
+importToServerFolder = "Z:/Population Health Management/Attributes Data/processing_folder/import_to_server/"
+```
+ 
+ 
+```{r clearAttributeTables}
+ans = readline("Would you like to clear the attribute database tables in Population_Segmentation? (EXEC sp_EmptyTables).  \nClose VPN connection now if it is open.  Enter Y or N.")
+if (ans=="Y") { # make a connection to DB and execute code
+  tryCatch( {
+    message("Trying to connect to database.")
+    con <- dbConnect(odbc(), 
+                   Driver = "SQL Server", 
+                   Server = "ocdb01", 
+                   Database = "Population_Segmentation", 
+                   Trusted_Connection = "True")
+  }, error=function(cond) {
+    message("Connection to database failed.")
+    message(cond)
+    return(NA) 
+  }, finally={
+    message("Connection to database success.")
+    log_info(con)
+  })
+  # Execute stored procedure
+  log_info("Running EXEC sp_EmptyTables ... takes a few moments....")
+  out = dbExecute(con, "EXEC sp_EmptyTables")
+  assert_that(are_equal(out,0), msg="Emptying the attribute tables may have failed.  Investigate.  Try re-running.")
+  log_info(out)
+  log_info("Emptied the contents of the attribute tables.")
+  dbDisconnect(con)
+}  
+```
+
+Perform upload of one file.
+This is used when there is a problem.
+*** Do not execute in normal circumstances ***
+If out is 1 then the upload has failed and the code will stop.  We need out to be 0 to define success.
+Remember: DELETE FROM att.adhd 
+DELETE FROM att.adhd
+```{r uploadOneFile, eval=FALSE}
+Do not run this.  For use when there is a problem
+pathToPackageX = paste0('"', pathToPackage, gsub(".csv", ".dtsx", "hba1c.csv"), '"')
+out = system2(pathToExec, paste0('-File ', pathToPackageX),
+         stdout = 'stdout.txt', stderr = 'stderr.txt', wait = TRUE)
+assert_that(out==0, msg=paste0("Upload failed for", pathToPackageX, "."))
+```
+
+We loop over each of the 8 directories (Group 1 to Group 7 and all groups) and upload each csv file
+in those directories.  Previous code checks (PHM_Validate_X.Rmd) that all the csv files are there and are valid (no header file,
+greater than 0 KB etc).
+
+The code copies files from the individual group directories and paste them to folder "import to server".
+In this loop we loop over each of the 8 group folders and upload each csv attribute file to the DB.
+If an attribute fails to upload then 
+1. Open it up in Excel and check it.
+2. Download the file again from EMIS.
+3. Rebuild the dtsx file
+```{r performUpload}
+# Check that folder import to server is empty before we copy anything into it.  If it isn't empty
+# then delete the csv in it.
+dataFiles = dir(importToServerFolder, pattern="\\.csv$", ignore.case = FALSE, all.files = FALSE)
+if (length(dataFiles)>0) {
+   out = file.remove(paste0(importToServerFolder, dataFiles))
+}
+nGroups = length(folder_names)
+    
+for (j in 1:nGroups) {
+#for (j in 1:1) {l
+  indGroupFolder = paste0(attributes_path,"\\", folder_names[j])
+  dataFiles = dir(indGroupFolder, pattern="\\.csv$", ignore.case = FALSE, all.files = FALSE)
+  # Make sure that at least 20 files copied to the import to server folder
+  assert_that(length(dataFiles)>=20, msg=paste0("Less than 20 files in the folder ", folder_names[j]))
+  # Copy files to folder "importToServer"
+  log_info("Copying files to folder import to server...")
+  file.copy(from=paste0(indGroupFolder,"\\",dataFiles), to=importToServerFolder, overwrite = TRUE)
+  
+  
+  listOfAttributes = list.files(paste0(attributes_path,"\\", folder_names[j]), pattern="\\.csv$") # \\.csv$
+  nFiles = length(listOfAttributes)
+  
+  for (i in 1: nFiles) {
+    fullAttributePath = paste0(attributes_path,"\\", folder_names[j],"\\", listOfAttributes[i])
+    aFile = listOfAttributes[i]
+    
+    # Don't upload these files while Harry looks into a problem with the packages.
+    # THIS SHOULD BE REMOVED.  Harry wants to upload these ones manually.
+    #if (aFile == "Referral to social prescribing service.csv" |
+    #     aFile == "Social prescribing declined.csv" |
+    #     aFile == "Social prescribing offered.csv") {
+    #     message("Cycling....")
+    #     next
+    #}
+    # It took a loooong time to workout that I needed to put quotes around the paste in order
+    # for System2 command to work
+    # check I can open package (they are text files).  This captures if it exists or not.
+    # *** Harry and I made changes to the package names.  Be vigilent. ***
+    if (aFile=="hba1c_1.csv") {
+        pathToPackageX = paste0('"', pathToPackage, "hba1c_g1_1.dtsx", '"')
+        packData = read.csv(paste0(pathToPackage, "hba1c_g1_1.dtsx"))
+    } else if(aFile =="hba1c_2.csv") {
+      pathToPackageX = paste0('"', pathToPackage, "hba1c_g1_2.dtsx", '"')
+      packData = read.csv(paste0(pathToPackage, "hba1c_g1_2.dtsx"))
+    } else if(aFile =="idh_nonmi.csv") {
+      # typo on condition idh_nonmi.csv but ihd_nonmi.dtsx
+      pathToPackageX = paste0('"', pathToPackage, "ihd_nonmi.dtsx", '"')
+      packData = read.csv(paste0(pathToPackage, "ihd_nonmi.dtsx"))
+    } else {
+       pathToPackageX = paste0('"', pathToPackage, gsub(".csv", ".dtsx", aFile), '"')
+       packData = read.csv(paste0(pathToPackage, gsub(".csv", ".dtsx", aFile)))
+    }
+    log_info("File {i} of {nFiles}: uploading file {aFile} in {folder_names[j]} with package {pathToPackageX}")
+    # Check I can open csv file
+    attribData <- read.csv(fullAttributePath)
+    
+    
+    #print(paste0("Calling package for attribute ", aFile))
+    if (aFile == "bp_date_reading.csv") {
+      columnNames = colnames(attribData)
+      # there must be four headings and they must be:
+      m = paste0("Check the column headings in file bp_date_reading.csv in ",  folder_names[j], ".  They need to be Value_sy and Value_di.")
+      assert_that(are_equal(columnNames[1], "NHS.Number"), msg=m)
+      assert_that(are_equal(columnNames[2], "Date"), msg=m)
+      assert_that(are_equal(columnNames[3], "Value_sy"), msg=m)
+      assert_that(are_equal(columnNames[4], "Value_di"), msg=m)
+    }
+    out = system2(pathToExec, paste0('-File ', pathToPackageX),
+         stdout = 'stdout.txt', stderr = 'stderr.txt', wait = TRUE)
+    
+    assert_that(out==0, msg=paste0("The file ", aFile, " has not been correctly uploaded.  Check the stderr.txt and stdout.txt files in this directory."))
+    # Check that the stderr.txt is empty and stop if it is not
+    stderr <- read_csv("stderr.txt")
+    assert_that(are_equal(nrow(stderr),0), msg="The file stderr.txt has an error.  Code terminated.  Take a look at this file.")
+    
+    # Have a rest every n loops
+    if (i %% 100==0) {
+        log_info("Resting....")
+        Sys.sleep(5) # amount expressed in seconds.
+    }
+  }
+  # We have completed uploading the files from an individual group.  Now delete the files in "import to server"
+  # and move to the next group
+  log_info("deleting files in folder import to server ...")
+  out = file.remove(paste0(importToServerFolder, dataFiles))
+  assert_that(are_equal(sum(out!=TRUE),0), msg="Looks like some files were not deleted from the import to server folder.  Perhaps someone has a file open on their machine.")
+}
+
+#log_info("Check that the three new metrics from December 2021 have been uploaded into the DB correctly.  You should find #Att.personal_care_plan_completed, Att. preferred_priorities_for_care_document_completed and Att.respect_setting.")
+```
+
+
+Now import the measurement files.
+
+```{r definitions} 
+#thisMonth = "202202"
+folder_names = c("G1","G2", "G3", "G4", "G5", "G6", "G7")
+activity_path = paste0("Z:\\Population Health Management\\Activity Data\\processing_folder\\Raw_Data\\", thisMonth)
+pathToPackage = "Z:/Population Health Management/Activity Data/processing_folder/Raw_Data/sql_packages/"
+pathToExec="C:\\Program Files (x86)\\Microsoft SQL Server\\120\\DTS\\Binn\\DTEXEC.exe"
+importToServerFolderMeasurements = "Z:/Population Health Management/Activity Data/processing_folder/Raw_Data/import_measurements/"
+```
+
+Perform measurement uploads.
+```{r performUpload}
+# Check that folder import to server is empty before we copy anything into it.  If it isn't empty
+# then delete the csv in it.
+dataFiles = dir(importToServerFolderMeasurements, "\\.csv$", ignore.case = FALSE, all.files = FALSE)
+if (length(dataFiles)>0) {
+   out = file.remove(paste0(importToServerFolderMeasurements, dataFiles))
+}
+nGroups = length(folder_names)
+
+for (j in 1:nGroups) {
+#for (j in 1:1) {
+  indGroupFolder = paste0(activity_path,"\\Measurements\\", folder_names[j])
+  dataFiles = dir(indGroupFolder, ignore.case = FALSE, all.files = FALSE, pattern="\\.csv$") #  # \\.csv$
+  # Make sure that at least 20 files copied to the import to server folder
+  assert_that(length(dataFiles)>=10, msg=paste0("Less than 9 files in the folder ", folder_names[j]))
+  
+  log_info("Copying files to folder import_measurements...")
+  file.copy(from=paste0(indGroupFolder,"\\",dataFiles), to=importToServerFolderMeasurements, overwrite = TRUE)
+  
+  
+  listOfMeasurements = list.files(paste0(activity_path,"\\Measurements\\", folder_names[j]), pattern="\\.csv$") # pattern="*.csv"
+  # Here is how to upload one file in case there is every a need.
+  #listOfMeasurements = "efi_category.csv"
+  nFiles = length(listOfMeasurements)
+  message("There are ", nFiles, ' to cycle over.')
+  for (i in 1: nFiles) {
+    fullMeasurementPath = paste0(activity_path,"\\Measurements\\", folder_names[j],"\\", listOfMeasurements[i])
+    aFile = listOfMeasurements[i]
+    
+
+    pathToPackageX = paste0('"', pathToPackage, "mea_",gsub(".csv", ".dtsx", aFile), '"')
+    packData = read.csv(paste0(pathToPackage, "mea_",gsub(".csv", ".dtsx", aFile)))
+    
+    log_info("File {i} of {nFiles}: uploading file {aFile} in {folder_names[j]} with package {pathToPackageX}")
+   
+    measurementData <- read.csv(fullMeasurementPath)
+    
+    
+    out = system2(pathToExec, paste0('-File ', pathToPackageX),
+         stdout = 'stdout.txt', stderr = 'stderr.txt', wait = TRUE)
+    
+    assert_that(out==0, msg=paste0("The file ", aFile, " has not been uploaded correctly.  Check the stderr.txt and stdout.txt files in this directory."))
+    # Check that the stderr.txt is empty and stop if it is not
+    stderr <- read_csv("stderr.txt")
+    assert_that(are_equal(nrow(stderr),0), msg="The file stderr.txt has an error.  Code terminated.  Take a look at this file.")
+    
+    # Have a rest every n loops
+    if (i %% 100==0) {
+        log_info("Resting....")
+        Sys.sleep(5) # amount expressed in seconds.
+    }
+  }
+  # We have completed uploading the files from an individual group.  Now delete the files in "import_measurements"
+  # and move to the next group
+  log_info("deleting files in folder import_measurements ...")
+  out = file.remove(paste0(importToServerFolderMeasurements, dataFiles))
+  assert_that(are_equal(sum(out!=TRUE),0), msg="Looks like some files were not deleted from the import_measurements folder.  Perhaps someone has a file open on their machine.")
+}
+```
+
+Upload one file:
+```{r upload_one_measurement_file}
+
+    out = system2(pathToExec, paste0('-File ', pathToPackageX),
+         stdout = 'stdout.txt', stderr = 'stderr.txt', wait = TRUE)
+```

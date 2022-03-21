@@ -1,0 +1,74 @@
+---
+title: "check_columns_in_individual_groups_have_same_columns"
+author: "Philip Gladwin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Purpose here is to check that the files in the individual groups have the same number of columns and the headings are the same in each file.
+While looking at the csv files in the individual groups I got the feeling this wasn't always the case.
+This may be the reason why the import fails.
+```{r init}
+library(tidyverse)
+library(plyr)
+```
+
+```{r params}
+as_of_month = "202202"
+```
+
+```{r check}
+m <- read_csv(paste0("MissingAttributesFromAllGroups/missingFilesFromAllGroups",as_of_month, ".csv"))
+nrows = nrow(m)
+p = paste0('Z:\\Population Health Management\\Attributes Data\\processing_folder\\Raw_Data\\', as_of_month, '\\')
+
+# Loop over each missing file
+conn = file("summary_of_headings_ind_groups.csv")
+for (i in 1:nrows) {
+  f = as.character(m[i,1])
+  message("Checking attribute: ", f)
+  c1 = character()
+  if (file.exists(f)) {
+    g1 = read_csv(paste0(p,'Group_One\\',f)) # hba1c
+    c1 = colnames(g1)
+  }
+  
+  g2 = read_csv(paste0(p,'Group_Two\\',f))
+  c2 = colnames(g2)
+  g3 = read_csv(paste0(p,'Group_Three\\',f))
+  c3 = colnames(g3)
+  g4 = read_csv(paste0(p,'Group_Four\\',f))
+  c4 = colnames(g4)
+  g5 = read_csv(paste0(p,'Group_Five\\',f))
+  c5 = colnames(g5)
+  c6 = data.frame()
+  if (file.exists(f)) {
+    g6 = read_csv(paste0(p,'Group_Six\\',f)) # hba1c
+    c6 = colnames(g6)
+  }
+  
+  g7 = read_csv(paste0(p,'Group_Seven\\',f))
+  c7 = colnames(g7)
+  # If the files in the individual groups have different column headings then joining the files together will crash.
+  # Individual files should be investigated if that happens.
+  merged_file = rbind(g1,g2,g3,g4,g5,g6,g7)
+  # Struggling to write column headings to a file with different number of column headings
+  #merged_column_headings = rbind.fill(as.data.frame(c1),as.data.frame(c2),as.data.frame(c3),
+  #                                    as.data.frame(c4),as.data.frame(c5),as.data.frame(c6),as.data.frame(c7))
+  #c = paste(c1,c2,c3,c4,c5,c6,c7, sep=",")
+  #write.csv(merged_column_headings, merged_column_headings, append=TRUE)
+  #write.csv(c1,file="summary_of_headings_ind_groups.csv", append = TRUE)
+  #write.csv(c2,file="summary_of_headings_ind_groups.csv", append = TRUE)
+  #write.csv(c3,file="summary_of_headings_ind_groups.csv", append = TRUE)
+  #write.csv(c4,file="summary_of_headings_ind_groups.csv", append = TRUE)
+  #write.csv(c5,file="summary_of_headings_ind_groups.csv", append = TRUE)
+  #write.csv(c6,file="summary_of_headings_ind_groups.csv", append = TRUE)
+  #write.csv(c7,file="summary_of_headings_ind_groups.csv", append = TRUE)
+}
+#fclose(conn)
+```
+
+

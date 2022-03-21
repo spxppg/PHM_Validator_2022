@@ -1,0 +1,441 @@
+---
+title: "Validate PHM"
+author: "Philip Gladwin"
+date: "05/08/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## PHM Validator
+This code is designed to be run after all the data relevant to PHM has been extracted from EMIS and
+before it is uploaded to the database using the SQL code.
+Its aims are to highlight any problems with the set of data before the SQL code is executed.  This may be:-
+1. Missing files
+2. Files with headers
+3. Files with the wrong 'relevant start date'
+4. Duplicated files
+5. Files which have too few rows
+6. Files with the wrong number of columns
+7. To check they are in csv format
+
+The steps in this code are:
+1. To read in the csv files
+2. Validate them against the above criteria
+3. Stop the code and alert the user if a problem is found.  The problem can then be solved manually
+and this code re-run.
+
+Inputs to the code:
+There is only one input to the code and that is a reference to the month you are working on e.g. '202008'
+
+# Improvements:
+1. validate that the bp_date_reading relative run date was set to last day of month.  
+I think the check to do this is that there is only the one month in the date column.
+
+
+# Tasks completed
+1. Write some code in R which lists the files which need to be executed in group1, group2, ..
+group 7...because they did not run in all_groups.  Doing this manually causes 
+delays.
+2. Check the if a file has a date column that we check that the dates are not in the future, not in the past and not silly
+
+```{r init}
+library(pracma)
+library(tools)
+library(stringr)
+library(tidyverse)
+library(lubridate)
+library(assertthat)
+library(logger)
+```
+Change inputs
+```{r inputs}
+asOfMonth = '202202'  # CHANGE ME
+groupFolders = c("All_groups", "Group_One", "Group_Two", "Group_Three", "Group_Four", "Group_Five", "Group_Six", "Group_Seven")
+pathToPHMFiles = 'Z:\\Population Health Management\\Attributes Data\\processing_folder\\Raw_Data\\'
+firstOfCurrentMonth = as.Date(paste0("01-", substring(asOfMonth,5,7), "-", substring(asOfMonth,1,4)), format("%d-%m-%Y"))
+endOfCurrentMonth = ceiling_date(firstOfCurrentMonth, "month") - days(1)
+firstOfNextMonth = firstOfCurrentMonth + months(1)
+asOfMonthAsNumber = (month(firstOfCurrentMonth))
+asOfYearAsNumber = year(firstOfCurrentMonth)
+```
+
+```{r startup}
+aggCutOff = 0.005 # Used to check that replicate patient details has been done correctly.  If the difference in
+# file size between the unaggregated and aggregated file is less than this cut off then code stops.
+groupname = c("Group_One", "Group_Two", "Group_Three", "Group_Four", "Group_Five", "Group_Six", "Group_Seven")
+pathToAsOfMonthAllGroups = paste0(pathToPHMFiles, asOfMonth, "\\All_groups")
+asOfMonthfileInfoAllGroups = file.info(list.files(path=pathToAsOfMonthAllGroups,pattern="\\.csv$", full.names=FALSE))
+asOfMonthfileInfoGroupOne = file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_One"),pattern="\\.csv$", full.names=FALSE))
+asOfMonthfileInfoGroupTwo = file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Two"),pattern="\\.csv$", full.names=FALSE))
+asOfMonthfileInfoGroupThree = file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Three"),pattern="\\.csv$", full.names=FALSE))
+asofMonthfileInfoGroupFour = file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Four"),pattern="\\.csv$", full.names=FALSE))
+asOfMonthfileInfoGroupFive = file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Five"),pattern="\\.csv$", full.names=FALSE))
+asOfMonthfileInfoGroupSix = file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Six"),pattern="\\.csv$", full.names=FALSE))
+asOfMonthfileInfoGroupSeven = file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Seven"),pattern="\\.csv$", full.names=FALSE))
+
+asOfMonthfilenamesAllGroups = rownames(asOfMonthfileInfoAllGroups)
+asOfMonthfilenamesGroupOne = rownames(asOfMonthfileInfoGroupOne)
+asOfMonthfilenamesGroupTwo = rownames(asOfMonthfileInfoGroupTwo)
+asOfMonthfilenamesGroupThree = rownames(asOfMonthfileInfoGroupThree)
+asofMonthfilenamesGroupFour = rownames(asofMonthfileInfoGroupFour)
+asOfMonthfilenamesGroupFive = rownames(asOfMonthfileInfoGroupFive)
+asOfMonthfilenamesGroupSix = rownames(asOfMonthfileInfoGroupSix)
+asOfMonthfilenamesGroupSeven = rownames(asOfMonthfileInfoGroupSeven)
+
+fileNamesAsList = list(AllGroups = asOfMonthfilenamesAllGroups, GroupOne = asOfMonthfilenamesGroupOne,
+                       GroupTwo = asOfMonthfilenamesGroupTwo, GroupThree = asOfMonthfilenamesGroupThree,
+                       GroupFour = asofMonthfilenamesGroupFour, GroupFive = asOfMonthfilenamesGroupFive,
+                       GroupSix = asOfMonthfilenamesGroupSix, GroupSeven = asOfMonthfilenamesGroupSeven)
+
+
+asOfMonthUniqueFilenames = sort(unique(c(asOfMonthfilenamesAllGroups,
+                              asOfMonthfilenamesGroupOne,
+                              asOfMonthfilenamesGroupTwo,
+                              asOfMonthfilenamesGroupThree,
+                              asofMonthfilenamesGroupFour, 
+                              asOfMonthfilenamesGroupFive,
+                              asOfMonthfilenamesGroupSix,
+                              asOfMonthfilenamesGroupSeven)))
+
+numberOfFilesThisMonth =  length(asOfMonthUniqueFilenames)
+log_info("This month there are {numberOfFilesThisMonth} unique filesnames.")
+```
+
+
+
+Read in the definitive list of files.
+```{r readInDefinitiveList}
+definitiveList = (read.csv("./DefinitionFiles/definitiveAttributeList.csv", stringsAsFactors = FALSE))
+definitiveList = as.character(definitiveList$x)
+nDefinitiveList = length(definitiveList)
+assert_that(nDefinitiveList>200, msg = "Definitive list for attributes looks a bit small.  Investigate.")
+log_info("There are {nDefinitiveList} unique files.")
+```
+
+Create a scorecard.  This is a matrix which will contain 1 or 0 against each file and the scorecard will be used to determine
+the accuracy of the files before upload to database in SQL.
+```{r CreateScorecard}
+scorecard = data.frame(Filename = definitiveList, All_groups = 0, Group_One = 0, Group_Two = 0, Group_Three = 0,
+                      Group_Four = 0, Group_Five= 0, Group_Six = 0, Group_Seven = 0)
+
+```
+
+1. Check if there are more files in asOfMonth than in the definitive list
+```{r checkIfNumberOfFilesThisMonthIsMoreThanDefinitivelist}
+log_info("There are {numberOfFilesThisMonth} files in {asOfMonth}.")
+log_info("There are {nDefinitiveList} files in the definitive month.")
+
+m1 = paste0("There is/are an extra file(s) this month.  Please add the new attribute to the ./DefinitonFiles/definitiveAttributeList.csv and run again.") 
+m2 = paste(c("The extra file(s) is/are ", setdiff(asOfMonthUniqueFilenames,definitiveList)), ":  ", collapse=" ") 
+m3 = paste0("If this this is because of hba1c_1.csv and hba1c_2.csv then it is safe to ignore this error.")
+m = paste(m1,m2,m3)
+assert_that(numberOfFilesThisMonth == nDefinitiveList, msg = m)
+```
+
+2. Check for missing files prep
+```{r checkForMissingFiles}
+#To do. check for duplicate entries.  Check that the nhs number for group 6 say are different to nhs numbers in group5 say.  Take asthma and #add up nhs number and check nhs numbers are different.  For March 2021.  OR check csv file sizes for each group.
+scorecard$All_groups = definitiveList %in% asOfMonthfilenamesAllGroups
+scorecard$Group_One = definitiveList %in% asOfMonthfilenamesGroupOne
+scorecard$Group_Two = definitiveList %in% asOfMonthfilenamesGroupTwo
+scorecard$Group_Three = definitiveList %in% asOfMonthfilenamesGroupThree
+scorecard$Group_Four = definitiveList %in% asofMonthfilenamesGroupFour
+scorecard$Group_Five = definitiveList %in% asOfMonthfilenamesGroupFive
+scorecard$Group_Six = definitiveList %in% asOfMonthfilenamesGroupSix
+scorecard$Group_Seven = definitiveList %in% asOfMonthfilenamesGroupSeven
+```
+
+Check: are there any files that should be in group 1,2,3,4,5,6, or 7 that are not?
+I filter the list on ALL_Groups = false and then check that the sum of the rows is 7.
+Give an error if it is not.
+```{r checkGroupXAreCorrect}
+print("Note: we introduced hba1c_1.csv and hbac1_2.csv in group 1.  This means that it is ok for the scorecard variable to have TRUE in group 1 and 2.")
+all_groups_is_false=scorecard[scorecard$All_groups==FALSE,]
+all_groups_is_false$ShouldBeSeven = all_groups_is_false$Group_One +
+  all_groups_is_false$Group_Two +
+  all_groups_is_false$Group_Three +
+  all_groups_is_false$Group_Four +
+  all_groups_is_false$Group_Five +
+  all_groups_is_false$Group_Six +
+  all_groups_is_false$Group_Seven
+
+temp = (all_groups_is_false[all_groups_is_false$ShouldBeSeven!=7,])
+
+assert_that(nrow(temp)==0, msg = "We may have downloaded more files than we need or missed some files.  Look at variable temp to identify the problem and then re-run this code again to ensure that there are not any more mistakes. If this 'temp' contains a Filename for hba1c then ignore it.  Also ignore covid_vaccine_first/second/generic.csv.  The covid files are downloaded from elsewhere nearer the 20th of each month.")
+
+```
+Check the column headings in file bp_date_reading.
+```{r checkbpdatereading}
+readline("Hit enter to continue and confirm that duplicate NHS numbers exist in files bp_date_reading.csv and post_virial_covid.csv")
+```
+
+Check column headings in bp_date_reading if it is in all groups.
+```{r checkColumnHeadings}
+#bp_date_reading <- read_csv("Z:/Population Health Management/Attributes #Data/processing_folder/Raw_Data/202110/All_Groups/bp_date_reading.csv", 
+#    col_types = cols(`NHS Number` = col_character(), 
+#        Date = col_date(format = "%d-%b-%Y"), 
+#        Value_sy = col_integer(), Value_di = col_integer(), 
+#        ...5 = col_character()))
+
+bp_date_reading <- read_csv(paste0("Z:/Population Health Management/Attributes Data/processing_folder/Raw_Data/", asOfMonth,"/All_Groups/bp_date_reading.csv"), 
+    col_types = cols(`NHS Number` = col_character(), 
+        Date = col_date(format = "%d-%b-%Y"), 
+        Value_sy = col_integer(), Value_di = col_integer()))
+
+
+bp_col_names = colnames(bp_date_reading)
+assert_that(bp_col_names[3] == "Value_sy", msg = "Correct column heading in file bp_date_reading.csv")
+assert_that(bp_col_names[4] == "Value_di", msg = "Correct column heading in file bp_date_reading.csv")
+```
+
+Next check:
+check if when all_groups is true that group one, group two, ... group seven are false
+```{r checkAllGroupsIsCorrect}
+all_groups_is_true=scorecard[scorecard$All_groups==TRUE,]
+all_groups_is_true$ShouldBeZero = all_groups_is_true$Group_One +
+  all_groups_is_true$Group_Two +
+  all_groups_is_true$Group_Three +
+  all_groups_is_true$Group_Four +
+  all_groups_is_true$Group_Five +
+  all_groups_is_true$Group_Six +
+  all_groups_is_true$Group_Seven
+
+
+temp = (all_groups_is_true[all_groups_is_true$ShouldBeZero!=0,])
+assert_that(nrow(temp)==0, msg="All_groups is TRUE but also there is an additionaly group where the same file can be found.  View variable temp to discover more.  Fix the problem and run this code again.")
+```
+
+Check that headers have not been downloaded in the files.
+We check for headers in all groups and group 1 to group 7
+
+IMPORTANT: sometimes it is reported that a file has a header when it does not.  The way to correct the bug is
+to check how many columns the variable "temp" has.  Usually this is two when it should only have 1.  So remove column B and save the file, run the code again and it should work.
+
+Check an nhs number column exists in every attribute.
+ Check file for dates in this month
+ Check that the first row is not blank.  If it is delete it.
+```{r CheckForHeadersAndDateColumn}
+next time consider removing the catch and just using the asserts to catch the errors because currently the catch I think is stopping the asserts from working
+numberOfGroups = length(groupFolders)
+cat(groupFolders)
+log_info("There are {numberOfGroups} folders.")
+ctr = 1 
+
+for (j in 1:numberOfGroups) {
+#for (j in 1:1) {
+  for (i in 1:length(fileNamesAsList[[j]])) {
+    log_info("j = {j}, i = {i}, {groupFolders[j]} {fileNamesAsList[[j]][i]}")
+    fn = paste0(pathToPHMFiles, asOfMonth, "\\", groupFolders[j], "\\", fileNamesAsList[[j]][i])
+    print(fn)
+    out = tryCatch( {
+      # If the file contains headers then the read.csv file will fail and give the error message that there are
+      # more columns than column names. We do not want column headings in the files that have been downloaded.
+      #temp = read.csv(fn, stringsAsFactors = FALSE)
+      temp = read_csv(fn)
+      
+      # Each attribute MUST have a column of nhs numbers.  Check that here by determining if a column
+      # follows the pattern of 3 digits + space + 3 digits + space + 4 digits.  nhs number is usually in
+      # column 1
+      #col_one_is_nhs_number = str_detect(temp[1,1], '[0-9][0-9][0-9] [0-9][0-9][0-9] [0-9][0-9][0-9][0-9]')
+      col_one_is_nhs_number = str_detect(colnames(temp)[1], 'NHS Number')
+      # Check if there is a second column and if there is check to see if it is an nhs number
+      col_two_is_nhs_number=FALSE
+      if (ncol(temp)>1) {
+        #col_two_is_nhs_number = str_detect(temp[1,2], '[0-9][0-9][0-9] [0-9][0-9][0-9] [0-9][0-9][0-9][0-9]')
+        col_two_is_nhs_number = str_detect(colnames(temp)[2], 'NHS Number')
+      }
+      assert_that(sum(col_one_is_nhs_number,col_two_is_nhs_number,na.rm=TRUE)>0, msg=paste0("File ",fn," does not contain an nhs number column.  Check."))
+      
+      # Can I convert the second row to an integer?  If I can't then it may indicate that the second row is a header.
+      # In the second row of the file "NHS Number" is NOT allowed and should be edited out but "?12345" is allowed.
+      # Count characters in range a to z.  If there is more than one it may indicate a second column heading
+      if (!is.na(as.character(temp[1,1]))) {
+        t1 = str_count(temp[1,1], "[a-z]")
+        t2 = str_count(temp[1,1], "[A-Z]")
+      # Count the number of numbers.  If there is more than a handful then it may be a dodgy NHS number which is allowed
+      #if (t>0) {
+      #   stopl(paste0("File ", fn, " may contain two rows as a header.  Correct that file and run this code #again."))
+ #     }
+        assert_that(t1==0 & t2==0, msg=paste0("File ", fn, " may contain two rows as a header.  Correct that file and run this code #again."))
+      }
+      
+      # Next check if the file has a date column that the date column is sensible.
+      # I run this with "Date" and "date" in order to find the name of the column with a date in it 
+      # No file contains a "date" column, only "Date
+      hasADateColumn = sum( colnames(temp) %in% c("Date"))
+      if (hasADateColumn>0) { # then we have a date column
+         # Format date column
+       #  readline(prompt="Press [enter] to continue")
+        d = as.Date(temp$Date, format("%d-%b-%y"))
+        # Check max date
+        #if( max(d, na.rm=TRUE) > firstOfNextMonth) {
+        #  message(paste0("Date in the future in filename ", fn, ". Code stopping"))
+        #  message(paste0("Maximum date is ", max(d, na.rm=TRUE)))
+        #  stop()
+        #}
+        assert_that(max(d, na.rm=TRUE) < firstOfNextMonth, msg=paste0("Date in the future in filename ", fn, ". Code stopping Maximum date is ", max(d, na.rm=TRUE)))
+                    
+        # Check min date
+        #if( min(d, na.rm=TRUE) < as.Date("01-01-1990", format("%d-%m-%Y")) ) {
+        #  # hard coded minimum date 
+        #   message(paste0("Date in the far too distant passed in filename ", fn, ". Code stopping"))
+        #   message(paste0("Minimum date is ", min(d, na.rm=TRUE)))
+        #   stop()
+        #}
+        assert_that(min(d, na.rm=TRUE) > as.Date("01-01-1990", format("%d-%m-%Y")), msg=paste0("Date in the far too distant passed in filename ", fn, ". Code stopping Maximum date is ", min(d, na.rm=TRUE)))
+      }
+      
+      # Check if bp_date_reading.csv exists and if it does check the column heading
+      if (fileNamesAsList[[j]][i]=="bp_date_reading.csv") {
+        cn = colnames(temp)
+        assert_that(cn[3]=="Value_sy")
+        assert_that(cn[4]=="Value_di")
+      }
+      
+      # Check that the first row does not contain blanks
+      num_cols = ncol(temp)
+      for (k in 1:num_cols) {
+         c = as.character((temp[1,k])) # the 1 here refers to the first row of data.
+         #if (fileNamesAsList[[j]][i]=="bmi.csv") {
+        #   stop()
+        # }
+        # if (!is.na(c)) {
+           assert_that(!is.na(c), msg=paste0("The first row contains NA in file ", fileNamesAsList[[j]][i]," ",groupFolders[j], " investigate."))
+           assert_that(nchar(c)>0, msg=paste0("There appears to be blanks in the first row of file", fileNamesAsList[[j]][i]," ", groupFolders[j]))
+        # }
+      }
+        
+      
+    },
+    error=function(cond) {
+            # This needs checking.  Need to purposely download a file with headers to check.
+            cat("Problem file")   
+            print(ctr)
+            stop(paste0("There is a problem with file: ", fn, " ", groupFolders[j], ".  Open it up and check for header at the top of it or 0 Kb and then run this code again.  Also check that the first row of data in the file does not contain a blank."))
+            return(NA)
+    }
+    )
+  }
+}
+```
+
+
+
+In attributes check if there any any files that have an extension something different to .csv.
+File extension must be csv.  If it is anything else then stop.
+We loop over every file in each directory and stop if there is a problem.
+```{r checkFileExtension}
+asOfMonthfileInfoAllGroups = rownames(file.info(list.files(path=pathToAsOfMonthAllGroups, full.names=FALSE)))
+asOfMonthfileInfoGroupOne = rownames(file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_One"), full.names=FALSE)))
+asOfMonthfileInfoGroupTwo = rownames(file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Two"), full.names=FALSE)))
+asOfMonthfileInfoGroupThree = rownames(file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Three"), full.names=FALSE)))
+asofMonthfileInfoGroupFour = rownames(file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Four"), full.names=FALSE)))
+asOfMonthfileInfoGroupFive = rownames(file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Five"), full.names=FALSE)))
+asOfMonthfileInfoGroupSix = rownames(file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Six"), full.names=FALSE)))
+asOfMonthfileInfoGroupSeven = rownames(file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Group_Seven"), full.names=FALSE)))
+
+stopifnot(sum( file_ext(asOfMonthfileInfoAllGroups) != "csv") ==0)
+stopifnot(sum( file_ext(asOfMonthfileInfoGroupOne) != "csv") ==0)
+stopifnot(sum( file_ext(asOfMonthfileInfoGroupTwo) != "csv") ==0)
+stopifnot(sum( file_ext(asOfMonthfileInfoGroupThree) != "csv") ==0)
+stopifnot(sum( file_ext(asofMonthfileInfoGroupFour) != "csv") ==0)
+stopifnot(sum( file_ext(asOfMonthfileInfoGroupFive) != "csv") ==0)
+stopifnot(sum( file_ext(asOfMonthfileInfoGroupSix) != "csv") ==0)
+stopifnot(sum( file_ext(asOfMonthfileInfoGroupSeven) != "csv") ==0)
+
+
+```
+
+We need to check the bp_date_reading file.  'Replicate patient details' MUST be checked when the file is downloaded from EMIS and this checks for that.  I check that when I group-by NHS number and count the numbers of time an NHS number is replicated that there are more than XXXXX rows in the set of data.
+I assume that bp_date_reading has been downloaded into the All Groups folder.
+NOTE: This code only works for files in the all_groups folder.  This means "ccegfr",
+ "Covid_higher_risk_CMO.csv", "Covid_increased_risk_CMO.csv""covid_antigen_negative.csv",
+ "covid_antigen_positive.csv",  "covid vaccine first dose.csv",  "covid vaccine second dose.csv",
+ "hba1c.csv" not checked.  IMPROVE.
+```{r CheckReplicatePatientDetailsIsTRUEInAllGroups}
+# TO DONeed to check that replicate patient details is working with bp date reading.  Harry said it wasn't when processing July 2021 data.
+#replicatePatientDetailsFor = c("bp_date_reading.csv", "Post_viral_covid.csv")
+#replicatePatientDetailsFor = c("Post_viral_covid.csv")
+replicatePatientDetailsFor = c("bp_date_reading.csv")
+for (i in 1:length(replicatePatientDetailsFor)) {
+  log_info("i = {i} file = {replicatePatientDetailsFor[i]}")
+  aFile = read_csv(paste0(pathToAsOfMonthAllGroups, paste0("\\",replicatePatientDetailsFor[i])))
+                           #col_names = c("NHS_NUMBER", "DATE", "VALUE_SY", "VALUE_DY"),
+                           #col_types = cols(Date = col_date(format = "%d-%b-%y")))
+# Count the number of times duplicate nhs numbers occur.  If an NHS number appears only
+# once then remove it from the list
+  aFileAgg = aFile %>% group_by(`NHS Number`) %>% summarise(count = n()) %>% filter(count>1)
+  message(paste0("Number of rows after aggregation is:", nrow(aFileAgg)))
+  message(paste0("Number of rows in original file is:", nrow(aFile)))
+  message(paste0("As a percentage this is:", nrow(aFileAgg)/nrow(aFile)))
+  message("The code will stop if the numbr of rows in the aggregated file is less than ", aggCutOff*100, "% of the number of rows in the original file.")
+  stopifnot((nrow(aFileAgg)/nrow(aFile))>aggCutOff)
+}
+```
+
+Check other files which should have replicate patient details checked that are located in the individual groups.
+We open each file in the individual groups and aggregate the nhs number.  If replicate patient details has
+been done properly then there should be instances of multiple nhs number in each file.
+```{r CheckReplicatePatientDetailsIsTRUEInIndividualGroups}
+replicatePatientDetailsFor = c("cc_eGFR.csv","Post_viral_covid.csv"
+                               #"covid_antibody_negative.csv", 
+                               #"covid_antibody_positive.csv",
+                               #"covid_antigen_positive.csv", 
+                               #"covid vaccine first dose.csv", 
+                               #"covid vaccine second dose.csv")
+                               # "Covid_higher_risk_CMO.csv",
+                               # "Covid_increased_risk_CMO.csv"
+)
+
+for (j in 1:(numberOfGroups-1)) {
+  pathToRPD = paste0(pathToPHMFiles, "\\", asOfMonth, "\\", groupname[j])
+  for (i in 1:length(replicatePatientDetailsFor)) {
+    cat(paste("i = ", i, "j = ", j,  " file = ", replicatePatientDetailsFor[i]), "path=", pathToRPD[j])
+    aFile = read_csv(paste0(pathToRPD, paste0("\\",replicatePatientDetailsFor[i])))
+                             #col_names = c("NHS_NUMBER", "DATE", "VALUE_SY", "VALUE_DY"),
+                             #col_types = cols(Date = col_date(format = "%d-%b-%y")))
+  # Count the number of times duplicate nhs numbers occur.  If an NHS number appears only
+  # once then remove it from the list
+  aFileAgg = aFile %>% group_by(`NHS Number`) %>% summarise(count = n()) %>% filter(count>1)
+  message(paste0("Number of rows after aggregation is:", nrow(aFileAgg)))
+  message(paste0("Number of rows in original file is:", nrow(aFile)))
+  message(paste0("As a percentage this is:", nrow(aFileAgg)/nrow(aFile)))
+  message("The code will stop if the numbr of rows in the aggregated file is less than ", aggCutOff*100, "% of the number of rows in the original file.")
+  stopifnot((nrow(aFileAgg)/nrow(aFile))>aggCutOff)
+  }
+}
+```
+
+Look at the column headings of each file and see if there is a date heading and if there is check that the
+dates are "this" month.
+listAgg contains a list of all the column headings.
+Note this code can give an error "failed to parse" which can be ignored.  This occurs when a date is NA in the date column.
+```{r CheckDateColumns}
+for (j in 1: numberOfGroups) {
+  folder = paste0(pathToPHMFiles, "\\", asOfMonth, "\\", groupFolders[j], "\\")
+  listOfAttributes = rownames(file.info(list.files(folder,pattern="\\.csv$", full.names=FALSE)))
+  nAttributes = length(listOfAttributes)
+  listAgg = NULL
+  
+  for (i in 1: nAttributes) {
+    anAttribute = listOfAttributes[i]
+    print(paste0("File ", anAttribute, " in ", groupFolders[j], ". File ", i, " of ", nAttributes))
+    attributeHeading = read.csv(paste0(folder, anAttribute), header=TRUE, nrows=1)
+    list = cbind(anAttribute, colnames(attributeHeading))
+    listAgg = rbind(listAgg,list)
+  }
+  
+  # Now loop over each column heading and if it is a date check that it is relevant to "this" month
+  
+  for (i in 1:nAttributes) {
+     if (listAgg[i,2] == "Date") {
+       attData = read.csv(paste0(folder, listAgg[i,1]), header=TRUE)
+       monthAsNumber = month(dmy(attData$Date))
+       assert_that(max(dmy(attData$Date), na.rm=TRUE) <= endOfCurrentMonth, msg = paste0("There are some dates in file ", folder, listAgg[i,1], " which are too large.  Check and re-run this code." ))
+     }
+   }
+}
+```

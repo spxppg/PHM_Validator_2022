@@ -1,0 +1,130 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Aim of this code is to 1) read in the metrics file which contains the number of each attributes historically
+2) to create a minimum and maximum for each attribute based on that data and 3) to determine if this months'
+data falls within that range.
+
+IMPORTANT: it is a good idea to run file determineAcceptableRangesForSubmissionFile.Rmd before executing this code but talk to Philip about this first.  IMPORTANT: the file attribSubmissionVolumes2021 SHOULD NOT include the current months attributes data.
+
+Determine acceptable levels for each metric.  This is done by finding the minimum and maximum value
+from the submission considered in this code.
+
+This code does not WRITE data to the database; only reads.
+
+This code outputs two files: areAttributesReadyToSubmit_Actuals.csv and areAttributesReadyToSubmit_Prevalence.csv.
+Use Excel to format the Prevalence output file into Percents to make easier reading.  Anything outside the minimum or maximum range needs investigation.
+
+Check that each row has a value of "this month" which falls between the minimum and maximum of the previous n
+months.
+
+
+Done:
+1. put this month column towards the end of the table 
+2. calculate prevalence
+3. minimum greater than 0
+4. upload code to github
+5. bug fix.  Was calcualting the mean, min, and max including this month when it should have excluded this month.
+
+```{r init}
+library(tidyverse)
+library(lubridate)
+library(odbc)
+library(DBI)
+library(stringi)
+library(assertthat)
+library(scales)
+source("processASubmissionFile.R")
+```
+
+These inputs are the only place in the code where you need to change variables from one month to the next.
+```{r inputs}
+# Assumes the schema is "terminal"
+thisMonthsSubmissionDBTable = "attrib_202107_complete"
+comparisonFile = "./AttributeSubmissionVolumes/attribSubmissionVolumes2021-08-13_Master.csv"
+```
+
+Read in attribute file which gives us the number of records per submission for each attribute.
+```{r readsubmissionVolumes}
+submissionVolumes = read.csv(comparisonFile, stringsAsFactors = FALSE)
+```
+
+
+
+Now get this months attributes from the submission table in the DB.
+Recommendation: place the function to create a connection into a function.
+```{r getThisMonthsAttributeVolume}
+tryCatch( {
+    message("Trying to connect to database.")
+    con <- dbConnect(odbc(), 
+                   Driver = "SQL Server", 
+                   Server = "ocdb01", 
+                   Database = "Population_Segmentation", 
+                   Trusted_Connection = "True")
+  }, error=function(cond) {
+    message("Connection to database failed.")
+    message("This means that the workforce data has not been sent to the OPEL database today.")
+    message(cond)
+    return(NA) 
+  }, finally={
+    message("Connection to database success.")
+    print(con)
+  })
+thisMonthsMetrics = processASubmissionFile(thisMonthsSubmissionDBTable)
+# Change the name of the column from "attrib_YYYMM_complete" to "thisMonth"
+names(thisMonthsMetrics)[names(thisMonthsMetrics) == thisMonthsSubmissionDBTable] <- "thisMonth"
+```
+
+
+Join the results from this month with the table of stats (mean, min, max).
+```{r performJoin}
+message(paste("Rows before join are:", nrow(submissionVolumes), " and columns ", ncol(submissionVolumes)))
+submissionVolumes = left_join(thisMonthsMetrics,submissionVolumes, "Attributes")
+message(paste("Rows after join are:", nrow(submissionVolumes), " and columns ", ncol(submissionVolumes)))
+message("Number of columns should have increased by 1.")
+```
+
+Now check how this months attribute volumes compare to history.
+Move "This_Month" column to be 5th from the end.
+
+Now calculate the minimum and maximum value for each attribute. We need to calculate a minimum that is
+above zero.
+
+```{r calculatePrevelance}
+# Create a results of prevalence
+tableForScrutiny_prev  = apply(submissionVolumes[,-1],2,function(x){x/sum(x,na.rm=TRUE)})
+tableForScrutiny_prev = as.data.frame(tableForScrutiny_prev)
+tableForScrutiny_prev$Attributes = thisMonthsMetrics$Attributes # need to put attributes column back in after calculating prevalence
+tableForScrutiny_prev = tableForScrutiny_prev %>% relocate(Attributes) # move to first column
+tableForScrutiny_prev$Minimum = apply(tableForScrutiny_prev[,2:ncol(tableForScrutiny_prev)], 1, function(x) min(x[x>0], na.rm=TRUE))
+tableForScrutiny_prev$Maximum = apply(tableForScrutiny_prev[,2:ncol(tableForScrutiny_prev)], 1, function(x) max(x[x>0], na.rm=TRUE))
+tableForScrutiny_prev$Mean = apply(tableForScrutiny_prev[,2:ncol(tableForScrutiny_prev)], 1, function(x) mean(x[x>0], na.rm=TRUE))
+tableForScrutiny_prev$isValid = tableForScrutiny_prev$thisMonth >= tableForScrutiny_prev$Minimum &
+  tableForScrutiny_prev$thisMonth <= tableForScrutiny_prev$Maximum
+tableForScrutiny_prev = tableForScrutiny_prev %>% relocate(thisMonth, .after = last_col()-4)
+tableForScrutiny_prev = percent(tableForScrutiny_prev)
+# Convert data to nicely formatted percentage
+```
+
+Now calculate actuals
+```{r calcActuals}
+# column 2 of submissionVolumes stores the attributes for this month so we calculate minimum from 3 onward.
+tableForScrutiny = submissionVolumes
+tableForScrutiny$Minimum = apply(submissionVolumes[,3:ncol(submissionVolumes)], 1, function(x) min(x[x>0], na.rm=TRUE))
+tableForScrutiny$Maximum = apply(submissionVolumes[,3:ncol(submissionVolumes)], 1, function(x) max(x[x>0], na.rm=TRUE))
+tableForScrutiny$Mean = apply(submissionVolumes[,3:ncol(submissionVolumes)], 1, function(x) mean(x[x>0], na.rm=TRUE))
+
+tableForScrutiny$isValid = tableForScrutiny$thisMonth >= tableForScrutiny$Minimum &
+  tableForScrutiny$thisMonth <= tableForScrutiny$Maximum
+ncol = ncol(tableForScrutiny)
+nrow = nrow(tableForScrutiny)
+tableForScrutiny = tableForScrutiny %>% relocate(thisMonth, .after = last_col()-4)
+```
+
+Write data to csv file to eye ball.  Look if there are any FALSE in the ISVALID column and try and understand
+why before you submit the file.  
+```{r writeDataToCSV}
+write.csv(tableForScrutiny, paste0("./areAttributesReadyToSubmit/areAttributesReadyToSubmit_actuals", today(), ".csv"), row.names=FALSE)
+write.csv(tableForScrutiny_prev, paste0("./areAttributesReadyToSubmit/areAttributesReadyToSubmitprevalence", today(), ".csv"), row.names=FALSE)
+```
+

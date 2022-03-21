@@ -1,0 +1,101 @@
+---
+title: "determineSubmissionCriteria"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Determine the submission criteria
+
+This code establish a submission criteria for each attribute.  It looks at historical submission database tables 
+to generate a table of what's allowed and then compares the new month to the historical data and alerts the User if
+an attribute is out of range.
+
+This code generates the tables with acceptable ranges.  It does this by looking at each file in turn and counting
+qof_asthma (say) that are not NULL.  When this has been done for every month we can determine a minimum and a maximum and hope the new month fits inside that.
+
+
+```{r init}
+library(odbc)
+library(DBI)
+library(tidyverse)
+library(lubridate)
+source("processASubmissionFile.R")
+```
+
+Specify inputs.
+
+I suggest when this needs updating that just the latest submission file should be used and then the results generated to this code appened to the metrics csv file as an extra column.  This code takes perhaps 30 minutes to run to run over 10 historical submission tables.
+Much shorter if you run over just 1.
+If you are in August 2021 and you are processing July's data then you need to use June here.
+```{r inputs}
+#sub_DB_tables = c("attrib_202002_covid_sub",
+#                    "attrib_202003_2_sub",
+#                    "attrib_202004_sub",
+#                    "attrib_202005",
+#                    "attrib_202006_sub",
+#                    "attrib_202007_sub",
+#                    "attrib_202008_sub",
+#                    "attrib_202009_sub",
+#                    "attrib_202010_2_sub", 
+#                    "attrib_202011_sub",
+#                    "attrib_202012_complete", 
+#                    "attrib_202101_complete",  
+#                    "attrib_202102_complete", 
+#                    "attrib_202103_complete")
+#sub_DB_tables = c("attrib_202104_complete")
+#sub_DB_tables = c("attrib_202105_complete")
+sub_DB_tables = c("attrib_202106_complete")
+```
+
+
+First connect to database.
+```{r connectToDB}
+tryCatch( {
+    message("Trying to connect to database.")
+    con <- dbConnect(odbc(), 
+                   Driver = "SQL Server", 
+                   Server = "ocdb01", 
+                   Database = "Population_Segmentation", 
+                   Trusted_Connection = "True")
+  }, error=function(cond) {
+    message("Connection to database failed.")
+    message("This means that the workforce data has not been sent to the OPEL database today.")
+    message(cond)
+    return(NA) 
+  }, finally={
+    message("Connection to database success.")
+    print(con)
+  })
+```
+
+Perform a loop over each submission table in the DB.
+```{r loopOverEachSubmissionTable}
+for (i in 1:length(sub_DB_tables)) {
+  message(paste0("Loop ", i, " of ", length(sub_DB_tables), " processing ",  sub_DB_tables[i]))
+  countNumberOfNonNAs_DF = processASubmissionFile(sub_DB_tables[i])
+  #Now we need to join the data from one submission with our metrics data frame.
+  #I want to join attribData from one submission to attribMetrics which is my output.
+  
+  message("Performing left join on column returned data")
+  head(countNumberOfNonNAs_DF)
+  if (i>1) { # no need to join on first iteration of loop
+    attribMetrics = left_join(attribMetrics, countNumberOfNonNAs_DF, "Attributes")
+    message("Join completed")
+  } else {
+    attribMetrics = countNumberOfNonNAs_DF
+  }
+  head(attribMetrics)
+}
+```
+
+Write attribute metrics to a file so they can be used by the next R script.
+```{R writeAttributesMetricsToa file}
+message("Writing attribute metrics to csv for use later.")
+write.csv(attribMetrics, paste0("./AttributeSubmissionVolumes/attribSubmissionVolumes", today(), ".csv"), row.names = FALSE)
+message("Code complete.")
+head(attribMetrics)
+```
+

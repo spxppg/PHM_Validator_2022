@@ -1,0 +1,29 @@
+---
+title: "FindColumnHeadingsOfAttributes"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This code looks at the column heading of each attribute file inthe 202105 submission.
+I use it to identify those attributes with a Date column.
+
+```{r init}
+library(tidyverse)
+```
+
+```{r findColumnHeading}
+listOfAttributes = rownames(file.info(list.files("Z:\\R\\PHM_Validator\\AllAttributes",pattern="*.csv", full.names=FALSE)))
+nAttributes = length(listOfAttributes)
+listAgg = NULL
+for (i in 1: nAttributes) {
+  anAttribute = listOfAttributes[i]
+  attributeHeading = read.csv(paste0("Z:\\R\\PHM_Validator\\AllAttributes\\", anAttribute), header=TRUE, nrows=1)
+  list = cbind(anAttribute, colnames(attributeHeading))
+  listAgg = rbind(listAgg,list)
+}
+
+write.csv(listAgg,"AttributeFileHeadings.csv")
+```

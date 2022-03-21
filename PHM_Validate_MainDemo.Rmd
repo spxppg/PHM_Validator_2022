@@ -1,0 +1,88 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r init}
+library(pracma)
+library(logger)
+library(tools)
+library(stringr)
+library(tidyverse)
+asOfMonth = '202202'
+pathToPHMFiles = 'Z:\\Population Health Management\\Attributes Data\\processing_folder\\Raw_Data\\'
+```
+
+## Check Main demo - the demographic information
+We check
+1. That there are more than 1 row and 1 column
+2. That the header file has not been included
+3. That each file exists
+
+
+Check the demographic files.  Look for the correct number of files and if the files contain column headers.
+```{r checkDemographics}
+definitiveDemographicList = read.csv("./DefinitionFiles/definitiveDemographicListOfFiles.csv", stringsAsFactors = FALSE)
+demographicFiles = file.info(list.files(path=paste0(pathToPHMFiles, asOfMonth,"\\Main_Demo"),pattern="\\.csv$", full.names=FALSE))
+
+# Check if there are more or less files than we should have
+if (nrow(definitiveDemographicList) != nrow(demographicFiles)) {
+  message(paste0("I was expecting ",nrow(definitiveDemographicList), " and got ",  nrow(demographicFiles)))
+  message(paste0("missing files are: ", definitiveDemographicList[definitiveDemographicList[,1] %in% rownames(demographicFiles)==FALSE,1]))
+  stop("The number of demographic files is not equal to the number in the definitive list of files")
+}
+dm = rownames(demographicFiles)
+
+check1 = dm %in% definitiveDemographicList[,1]
+if (sum(check1)!=nrow(definitiveDemographicList)) {
+  message(paste0("Unknown files:", dm[check1==FALSE]))
+}
+
+check2 = definitiveDemographicList[,1] %in% dm 
+if (sum(check2)!=nrow(definitiveDemographicList)) {
+  message(paste0("Missing files:", definitiveDemographicList[check2==FALSE,1]))
+}
+
+
+# Check for column headings
+nof = nrow(demographicFiles)
+for (i in 1:nof) {
+  out = tryCatch( {
+      # If the file contains headers then the read.csv file will fail and give the error message that there are
+      # more columns than column names
+      cat(paste("i = ",i, " ",  rownames(demographicFiles)[i], "\n"))
+      fn = paste0(pathToPHMFiles, asOfMonth, "\\Main_Demo\\",  rownames(demographicFiles)[i])
+      temp = read.csv(fn, stringsAsFactors = FALSE )
+      stopifnot((nrow(temp) > 1 | ncol(temp) > 1))
+    },
+    error=function(cond) {
+            message(paste("File ", fn, "may contain headers in the file."))
+            message("Check the file remove the headers and run this code again.")
+            message(cond)
+            # Choose a return value in case of error
+            return(NA)
+    }
+    )
+}
+```
+
+Now go and create the merged demographic file as described in the PHM walk-through document and then run this code
+```{r checkdemographicsmerged}
+# We need to check on the unique number of L8 codes.  Alert team if some L8 codes haven't appeared.
+s = paste0("Z:/Population Health Management/Attributes Data/processing_folder/Raw_Data/",asOfMonth,"/Main_Demo/PHM_Demo_Merged_", asOfMonth, ".csv")
+demo_merged = read_csv(s, 
+              col_types = cols(`Registration Date` = col_date(format = "%d-%b-%Y")))
+
+uniqueL8 = unique(demo_merged$`Usual GP's Organisation Code`)
+# Remove NA and "Usual GP's Organisation Code
+uniqueL8 = str_remove_all(uniqueL8,"Usual GP's Organisation Code")
+uniqueL8 = uniqueL8[nchar(uniqueL8)>5]
+uniqueL8 = na.omit(uniqueL8)
+uniqueL8
+log_info("There are {length(uniqueL8)} unique L8 codes.  Pass this by the team to check it is correct in case a Practice has switched itself off from EMIS.")
+log_info("Remember to change the column names in PHM_Demo_Merged_YYYYMM.csv manually.")
+write.csv(uniqueL8, file=paste0("Demographic_unique_L8_codes",asOfMonth, ".csv"))
+```
+
+
+

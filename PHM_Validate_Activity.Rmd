@@ -1,0 +1,275 @@
+---
+title: "Validate PHM"
+author: "Philip Gladwin"
+date: "05/08/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## PHM Validator
+This code is designed to be run after all the data relevant to PHM has been extracted from EMIS and
+before it is uploaded to the database using the SQL code.
+Its aims are to highlight any problems with the set of data before the SQL code is executed.  This may be:-
+1. Missing files
+2. Files with headers
+3. Files with the wrong 'relevant start date'
+4. Duplicated files
+5. Files which have too few rows
+6. Files with the wrong number of columns
+7. To check they are in csv format
+
+The steps in this code are:
+1. To read in the csv files
+2. Validate them against the above criteria
+3. Stop the code and alert the user if a problem is found.  The problem can then be solved manually
+and this code re-run.
+
+Inputs to the code:
+There is only one input to the code and that is a reference to the month you are working on e.g. '202008'
+
+# Improvements:
+1. validate that the bp_date_reading relative run date was set to last day of month.  
+I think the check to do this is that there is only the one month in the date column.
+2. Check the if a file has a date column that we check that the dates are not in the future, not in the past and not silly
+
+# Tasks completed
+1. Write some code in R which lists the files which need to be executed in group1, group2, ..
+group 7...because they did not run in all_groups.  Doing this manually causes 
+delays.
+
+```{r init}
+library(pracma)
+library(tools)
+library(stringr)
+library(tidyverse)
+library(logger)
+library(assertthat)
+```
+Inputs
+```{r inputs}
+asOfMonth = '202202' # CHANGE ME
+```
+
+
+# Activity data validation
+```{r activityPrep}
+firstOfCurrentMonth = as.Date(paste0("01-", substring(asOfMonth,5,7), "-", substring(asOfMonth,1,4)), format("%d-%m-%Y"))
+firstOfNextMonth = firstOfCurrentMonth + months(1)
+activityPath = paste0("Z:\\Population Health Management\\Activity Data\\processing_folder\\Raw_Data\\", asOfMonth)
+appsPath = paste0(activityPath, "\\Appointments")
+consPath = paste0(activityPath, "\\Consultations")
+pxPath = paste0(activityPath, "\\Px")
+asOfMonthsAsMonth = substring(asOfMonth,first = 5,9)
+```
+For activity check that all files have been downloaded.
+```{r checkAppointments}
+app_templateFilenames = 
+  c("PHM_Act_Appointments_G1.csv",
+    "PHM_Act_Appointments_G2.csv",
+    "PHM_Act_Appointments_G3.csv",
+    "PHM_Act_Appointments_G4.csv",
+    "PHM_Act_Appointments_G5.csv",
+    "PHM_Act_Appointments_G6.csv",
+    "PHM_Act_Appointments_G7.csv")
+
+appfileNames = rownames(file.info(list.files(path=appsPath,pattern="\\.csv$", full.names=FALSE)))
+
+haveAllAppsBeenDownloaded = app_templateFilenames %in% appfileNames
+temp = app_templateFilenames[haveAllAppsBeenDownloaded==FALSE]
+assert_that(sum(haveAllAppsBeenDownloaded)==length(app_templateFilenames), 
+            msg = paste0("Not all the appointment files have been downloaded in path ", 
+                         appsPath, ".  Check for missing files and run this code again.  Missing file(s) are ", temp))
+
+haveTooManyAppsBeenDownloaded =  appfileNames %in% app_templateFilenames
+
+temp = appfileNames[haveTooManyAppsBeenDownloaded==FALSE]
+assert_that(length(temp) == 0, 
+          msg = paste0("Too many files have been downloaded in path ", 
+                         appsPath, ".  Delete those files and run this code again.  Extra file(s) are ", temp))
+
+```
+
+Now check consultations:
+```{r checkConsultations}
+cons_templateFilesnames = c(
+  "PHM_Act_Consultations_a1_G1.csv",
+  "PHM_Act_Consultations_a1_G2.csv",
+  "PHM_Act_Consultations_a1_G3.csv",
+  "PHM_Act_Consultations_a1_G4.csv",
+  "PHM_Act_Consultations_a1_G5.csv",
+  "PHM_Act_Consultations_a1_G6.csv",
+  "PHM_Act_Consultations_a1_PMG_FN_G6.csv",
+  "PHM_Act_Consultations_a1_PMG_MU_G6.csv",
+  "PHM_Act_Consultations_a1_G7.csv",
+  "PHM_Act_Consultations_a2_G1.csv",
+  "PHM_Act_Consultations_a2_G2.csv",
+  "PHM_Act_Consultations_a2_G3.csv",
+  "PHM_Act_Consultations_a2_G4.csv",
+  "PHM_Act_Consultations_a2_G5.csv",
+  "PHM_Act_Consultations_a2_G6.csv",
+  "PHM_Act_Consultations_a2_G7.csv",
+  "PHM_Act_Consultations_a3_G1.csv",
+  "PHM_Act_Consultations_a3_G2.csv",
+  "PHM_Act_Consultations_a3_G3.csv",
+  "PHM_Act_Consultations_a3_G4.csv",
+  "PHM_Act_Consultations_a3_G5.csv",
+  "PHM_Act_Consultations_a3_G7.csv",
+  "PHM_Act_Consultations_a4_G1.csv",
+  "PHM_Act_Consultations_b1_G1.csv",
+  "PHM_Act_Consultations_b1_G2.csv",
+  "PHM_Act_Consultations_b1_G3.csv",
+  "PHM_Act_Consultations_b1_G4.csv",
+  "PHM_Act_Consultations_b1_G5.csv",
+  "PHM_Act_Consultations_b1_G6.csv",
+  "PHM_Act_Consultations_b1_G7.csv",
+  #"PHM_Act_Consultations_b2_G1.csv",
+  "PHM_Act_Consultations_b2_G1_ET_CS.csv",
+  "PHM_Act_Consultations_b2_G1_SV_GR.csv",
+  "PHM_Act_Consultations_b2_G2.csv",
+  #"PHM_Act_Consultations_b2_G3.csv",
+  "PHM_Act_Consultations_b2_G3_CH_GR_HS.csv",
+  "PHM_Act_Consultations_b2_G3_LH_PS_OS.csv",
+  "PHM_Act_Consultations_b2_G4.csv",
+  "PHM_Act_Consultations_b2_G5.csv",
+  "PHM_Act_Consultations_b2_G6.csv",
+  "PHM_Act_Consultations_b2_FW_G6.csv",
+  "PHM_Act_Consultations_b2_G7.csv",
+  "PHM_Act_Consultations_b3_G1.csv",
+  "PHM_Act_Consultations_b3_G2.csv",
+  "PHM_Act_Consultations_b3_G4.csv",
+  "PHM_Act_Consultations_b3_G5.csv",
+  "PHM_Act_Consultations_b3_G6.csv",
+  "PHM_Act_Consultations_b3_G7Crest.csv",
+  "PHM_Act_Consultations_b3_G7Tyntsfield.csv"
+  )
+
+consfileNames = rownames(file.info(list.files(path=consPath,pattern="\\.csv$", full.names=FALSE)))
+
+# Check for missing files
+haveAllConsBeenDownloaded = cons_templateFilesnames %in% consfileNames
+a_msg = paste0("These files are missing: ", cons_templateFilesnames[haveAllConsBeenDownloaded==FALSE], collapse = "")
+assert_that(sum(haveAllConsBeenDownloaded)==length(cons_templateFilesnames), msg = a_msg)
+              
+
+# Have more files been downloaded than we need?
+moreConsFilesThanNeeded = consfileNames %in% cons_templateFilesnames
+temp = consfileNames[moreConsFilesThanNeeded==FALSE]
+assert_that(length(temp)==0, msg=paste0("More files have been downlaoded than we need: ", consfileNames[moreConsFilesThanNeeded==FALSE]))
+```
+
+Finally check prescriptions:
+```{r checkPrescriptions}
+px_TemplateFilesnames = c(
+  "PHM_Px_Extract_G3.csv",
+  "PHM_Px_Extract_G4.csv",
+  "PHM_Px_Extract_G5F.csv",
+  "PHM_Px_Extract_G5M.csv",
+  "PHM_Px_Extract_a1_G1.csv",
+  "PHM_Px_Extract_a1_G2.csv",
+  "PHM_Px_Extract_a1_G7.csv",
+  "PHM_Px_Extract_a2_G1.csv",
+  "PHM_Px_Extract_a2_G2.csv",
+  "PHM_Px_Extract_a2_G7.csv",
+  "PHM_Px_Extract_G6.csv")
+
+pxfileNames = rownames(file.info(list.files(path=pxPath,pattern="\\.csv$", full.names=FALSE)))
+
+haveAllPxBeenDownloaded = px_TemplateFilesnames %in% pxfileNames
+
+m = paste0("These files are missing: ", px_TemplateFilesnames[haveAllPxBeenDownloaded==FALSE], ".")
+m = paste0(m, "Check for missing files and run this code again.")
+assert_that(sum(haveAllPxBeenDownloaded)==length(px_TemplateFilesnames), msg=m)
+
+#if (sum(haveAllPxBeenDownloaded)!=length(px_TemplateFilesnames)) {
+#  message()
+#  message("These files are missing", px_TemplateFilesnames[haveAllPxBeenDownloaded==FALSE])
+#  stop(paste0("Not all the px files have been downloaded in path ", pxPath, "  Check for missing files and run this code again."))
+#}
+
+# Have more files been downloaded than we need?
+morePxFilesThanNeeded = pxfileNames %in% px_TemplateFilesnames
+m = paste0("More files have been downloaded than we need.", pxfileNames[morePxFilesThanNeeded==FALSE])
+m = paste0(m, "Correct this and then re-run the code.")
+temp = pxfileNames[morePxFilesThanNeeded==FALSE]
+assert_that(isempty(temp)==TRUE, msg=m)
+```
+
+# Appointments
+Checks
+1. All L8 codes. Not done.
+2. Correct number of columns. Done.
+3. More than X 1000 rows. Done.
+4. Appointment date is the month in question only.  No other months.  Done.
+```{r checkAppointments}
+message("Working on activity appointments.")
+fullList = ""
+for (i in 1:length(app_templateFilenames)) {
+  log_info("File: {i} of {length(app_templateFilenames)}  {app_templateFilenames[i]}")
+  f = read.csv(paste0(appsPath, "\\", app_templateFilenames[i]), stringsAsFactors = FALSE)
+  assert_that(ncol(f) == 13 & nrow(f) > 10000, msg = paste0("Not enough rows or columns in file: ", app_templateFilenames[i], ".  Check the file and correct it and run this code again."))
+  
+  
+  f$Appointment.Date = as.Date(f$Appointment.Date, "%d-%b-%Y")
+  asMonths = format(f$Appointment.Date,"%m")
+  if ((as.numeric(min(asMonths, na.rm=TRUE)) != as.numeric(asOfMonthsAsMonth))
+      && (as.numeric(max(asMonths, na.rm=TRUE)) != as.numeric(asOfMonthsAsMonth))) {
+    message(paste0("We are looking for the month of ", asOfMonthsAsMonth, " but have found some dates outside that range.  Check file ", app_templateFilenames[i])) 
+  }
+}
+```
+# Consultations
+1. All L8 codes
+2. Correct number of columns
+3. More than X 1000 rows
+4. Appointment date is the month in question only.  No other months
+```{r WorkingOnConsultations}
+message("Working on consultations.")
+for (i in 1:length(cons_templateFilesnames)) {
+  message(paste0("File: ", i, " of ", length(cons_templateFilesnames), " ",  cons_templateFilesnames[i]))
+  f = read.csv(paste0(consPath, "\\", cons_templateFilesnames[i]), stringsAsFactors = FALSE)
+  if (nrow(f)>1) { 
+    assert_that(ncol(f) == 13 & nrow(f) > 10000, msg = paste0("Not enough rows or columns in file: ", cons_templateFilesnames[i], ".  Check the file and correct it and run this code again."))
+    
+    f$Date = as.Date(f$Date, "%d-%b-%Y")
+    asMonths = format(f$Date,"%m")
+    if ((as.numeric(min(asMonths, na.rm=TRUE)) != as.numeric(asOfMonthsAsMonth))
+        && (as.numeric(max(asMonths, na.rm=TRUE)) != as.numeric(asOfMonthsAsMonth))) {
+      message(paste0("We are looking for the month of ", asOfMonthsAsMonth, " but have found some dates outside that range.  Check file ", cons_templateFilesnames[i])) 
+    }
+  } else {
+    log_warn("The file is probably empty and contains 'This report is empty'")
+    log_warn("There are zero rows in file: {cons_templateFilesnames[i]}.  Check this is correct.  It's fine if it is correct.")
+  }
+}
+```
+
+
+# Prescriptions
+1. All L8 codes
+2. Correct number of columns
+3. More than X 1000 rows
+4. Appointment date is the month in question only.  No other months
+```{r checkPrescriptions}
+message("Working on prescriptions.")
+for (i in 1:length(px_TemplateFilesnames)) {
+  message(paste0("File: ", i, " of ", length(px_TemplateFilesnames), " ",  px_TemplateFilesnames[i]))
+  f = read.csv(paste0(pxPath, "\\", px_TemplateFilesnames[i]), stringsAsFactors = FALSE)
+  ## NOTE: Need to bring this up in a meeting.  The file only has 7 columns but R thinks
+  ## it has 8.
+  
+  assert_that(ncol(f) == 8 & nrow(f) > 10000, msg = paste0("Not enough rows or columns in file: ", px_TemplateFilesnames[i], ".  Check the file and correct it and run this code again."))
+ 
+  f$Date = as.Date(f$Date, "%d-%b-%Y")
+  asMonths = format(f$Date,"%m")
+  if ((as.numeric(min(asMonths, na.rm=TRUE)) != as.numeric(asOfMonthsAsMonth))
+      && (as.numeric(max(asMonths, na.rm=TRUE)) != as.numeric(asOfMonthsAsMonth))) {
+    message(paste0("We are looking for the month of ", asOfMonthsAsMonth, " but have found some dates outside that range.  Check file ", px_TemplateFilesnames[i])) 
+  }
+}
+```
+
+
+
